@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 const API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
 
 // ═══════════════════════════════════════════════════════════════
-// CLAUDE AI ENGINE
+// CLAUDE AI ENGINE — with proper tool-use loop
 // ═══════════════════════════════════════════════════════════════
 const HEADERS = {
   "Content-Type": "application/json",
@@ -13,36 +13,77 @@ const HEADERS = {
   "anthropic-dangerous-direct-browser-access": "true",
 };
 
-async function callClaude(messages, maxTokens = 1800, useSearch = false) {
-  const body = { model: "claude-sonnet-4-20250514", max_tokens: maxTokens, messages };
-  if (useSearch) body.tools = [{ type: "web_search_20250305", name: "web_search" }];
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST", headers: HEADERS, body: JSON.stringify(body),
-  });
-  if (!res.ok) { const err = await res.text(); console.error("API error", res.status, err); throw new Error(`API ${res.status}`); }
-  const data = await res.json();
-  return (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+// Handles multi-turn tool use (web search) automatically
+async function callClaudeWithTools(messages, maxTokens = 2000) {
+  const tools = [{ type: "web_search_20250305", name: "web_search" }];
+  let msgs = [...messages];
+
+  for (let turn = 0; turn < 5; turn++) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: maxTokens, tools, messages: msgs }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("API error", res.status, err);
+      throw new Error("API " + res.status + ": " + err);
+    }
+    const data = await res.json();
+    const content = data.content || [];
+
+    // Collect any text from this turn
+    const textParts = content.filter(b => b.type === "text").map(b => b.text);
+
+    // If stop_reason is end_turn or no tool_use blocks, we're done
+    const toolUseBlocks = content.filter(b => b.type === "tool_use");
+    if (data.stop_reason === "end_turn" || toolUseBlocks.length === 0) {
+      return textParts.join("");
+    }
+
+    // Add assistant's response to messages
+    msgs.push({ role: "assistant", content });
+
+    // Build tool results
+    const toolResults = toolUseBlocks.map(tu => ({
+      type: "tool_result",
+      tool_use_id: tu.id,
+      content: tu.input ? JSON.stringify(tu.input) : "Search completed",
+    }));
+    msgs.push({ role: "user", content: toolResults });
+  }
+  throw new Error("Tool loop exceeded max turns");
 }
 
-async function claudeJSON(prompt, maxTokens = 1800) {
+async function claudeJSON(prompt, maxTokens = 2000) {
   try {
     const todayStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
-    const text = await callClaude([{ role: "user", content: `Today is ${todayStr}. ${prompt}
+    const fullPrompt = "Today is " + todayStr + ". " + prompt + "
 
-Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation.` }], maxTokens, true);
-    const clean = text.replace(/\`\`\`json|\`\`\`/g, "").trim();
-    const start = clean.indexOf("["); const end = clean.lastIndexOf("]");
-    if (start === -1 || end === -1) throw new Error("No JSON array");
+IMPORTANT: Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation before or after.";
+    const text = await callClaudeWithTools([{ role: "user", content: fullPrompt }], maxTokens);
+    const clean = text.replace(/```json|```/g, "").trim();
+    const start = clean.indexOf("[");
+    const end = clean.lastIndexOf("]");
+    if (start === -1 || end === -1) {
+      console.error("No JSON array in response:", clean.slice(0, 200));
+      throw new Error("No JSON array found");
+    }
     return JSON.parse(clean.slice(start, end + 1));
-  } catch (e) { console.error("claudeJSON error:", e.message); return null; }
+  } catch (e) {
+    console.error("claudeJSON error:", e.message);
+    return null;
+  }
 }
 
 async function claudeText(prompt, maxTokens = 900) {
-  try { return await callClaude([{ role: "user", content: prompt }], maxTokens, true); }
-  catch (e) { console.error("claudeText error:", e.message); return "Analysis unavailable. Please try again."; }
+  try {
+    return await callClaudeWithTools([{ role: "user", content: prompt }], maxTokens);
+  } catch (e) {
+    console.error("claudeText error:", e.message);
+    return "Analysis unavailable. Please try again.";
+  }
 }
-
-
 
 // ═══════════════════════════════════════════════════════════════
 // PERSISTENT LEARNING AGENT
