@@ -42,24 +42,7 @@ async function claudeText(prompt, maxTokens = 900) {
   catch (e) { console.error("claudeText error:", e.message); return "Analysis unavailable. Please try again."; }
 }
 
-async function claudeText(prompt, maxTokens = 900) {
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: maxTokens,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-    const data = await res.json();
-    return (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
-  } catch (e) {
-    return "Analysis unavailable.";
-  }
-}
+
 
 // ═══════════════════════════════════════════════════════════════
 // PERSISTENT LEARNING AGENT
