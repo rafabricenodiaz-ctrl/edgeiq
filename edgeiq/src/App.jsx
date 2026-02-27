@@ -6,49 +6,40 @@ const API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
 // ═══════════════════════════════════════════════════════════════
 // CLAUDE AI ENGINE
 // ═══════════════════════════════════════════════════════════════
+const HEADERS = {
+  "Content-Type": "application/json",
+  "x-api-key": API_KEY,
+  "anthropic-version": "2023-06-01",
+  "anthropic-dangerous-direct-browser-access": "true",
+};
 
-// Multi-turn: search for real games first, then produce picks JSON
+async function callClaude(messages, maxTokens = 1800, useSearch = false) {
+  const body = { model: "claude-sonnet-4-20250514", max_tokens: maxTokens, messages };
+  if (useSearch) body.tools = [{ type: "web_search_20250305", name: "web_search" }];
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST", headers: HEADERS, body: JSON.stringify(body),
+  });
+  if (!res.ok) { const err = await res.text(); console.error("API error", res.status, err); throw new Error(`API ${res.status}`); }
+  const data = await res.json();
+  return (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+}
+
 async function claudeJSON(prompt, maxTokens = 1800) {
   try {
     const todayStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+    const text = await callClaude([{ role: "user", content: `Today is ${todayStr}. ${prompt}
 
-    // Step 1: search for real today's games across all leagues
-    const searchRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 600,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-        messages: [{
-          role: "user",
-          content: `Today is ${todayStr}. Search for ALL games being played TODAY in: NBA, NFL, Premier League, La Liga, MLS, Liga MX. List ONLY real confirmed matchups with tip-off/kick-off times. Also note any major injury news for today's games.`
-        }],
-      }),
-    });
-    const searchData = await searchRes.json();
-    const searchContext = (searchData.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation.` }], maxTokens, true);
+    const clean = text.replace(/\`\`\`json|\`\`\`/g, "").trim();
+    const start = clean.indexOf("["); const end = clean.lastIndexOf("]");
+    if (start === -1 || end === -1) throw new Error("No JSON array");
+    return JSON.parse(clean.slice(start, end + 1));
+  } catch (e) { console.error("claudeJSON error:", e.message); return null; }
+}
 
-    // Step 2: use that real game context to generate structured picks
-    const picksRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: maxTokens,
-        messages: [{
-          role: "user",
-          content: `Here are today's confirmed real games (${todayStr}):\n\n${searchContext}\n\n${prompt}\n\nIMPORTANT: Only include games confirmed above as playing TODAY. Do not invent or assume matchups. Respond ONLY with valid JSON. No markdown fences, no explanation.`
-        }],
-      }),
-    });
-    const picksData = await picksRes.json();
-    const text = (picksData.content || []).filter(b => b.type === "text").map(b => b.text).join("");
-    return JSON.parse(text.replace(/```json|```/g, "").trim());
-  } catch (e) {
-    console.error("claudeJSON error", e);
-    return null;
-  }
+async function claudeText(prompt, maxTokens = 900) {
+  try { return await callClaude([{ role: "user", content: prompt }], maxTokens, true); }
+  catch (e) { console.error("claudeText error:", e.message); return "Analysis unavailable. Please try again."; }
 }
 
 async function claudeText(prompt, maxTokens = 900) {
@@ -798,39 +789,37 @@ export default function App() {
 
   async function loadFantasy() {
     setFantasyLoading(true);
-    const todayStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
-
-    // Step 1: search for real players with games today
-    const searchRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 500,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-        messages: [{ role: "user", content: `Today is ${todayStr}. Search for NBA, NFL, EPL, MLS, Liga MX games today. List the real players who are confirmed to play tonight and any notable injury news or lineup changes. Focus on star players and prop candidates.` }],
-      }),
-    });
-    const searchData = await searchRes.json();
-    const context = (searchData.content || []).filter(b => b.type === "text").map(b => b.text).join("");
-
-    // Step 2: generate structured fantasy props
-    const propsRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1500,
-        messages: [{ role: "user", content: `Real players with games today (${todayStr}):\n\n${context}\n\nUsing ONLY real players confirmed above, generate 6 PrizePicks/Underdog prop recommendations for players in South Carolina (PrizePicks is legal there).\n\nReturn JSON array:\n{\n  "name": "Real Player Name",\n  "team": "Team",\n  "league": "NBA",\n  "position": "G",\n  "projection": "28.5",\n  "projStat": "PTS",\n  "analysis": "2-3 sentences citing real matchup, pace, injury context, recent form.",\n  "props": [\n    { "stat": "Points", "line": "27.5", "rec": "over", "reason": "Real stat-based reason" },\n    { "stat": "Assists", "line": "6.5", "rec": "under", "reason": "Real reason" }\n  ]\n}\nCRITICAL: Only use players CONFIRMED playing today. Exclude ANY player listed as OUT, injured, or doubtful. Do not invent names or use players from previous days. Verify each player is active and healthy.\nRespond ONLY with valid JSON. No markdown.` }],
-      }),
-    });
-    const propsData = await propsRes.json();
-    const text = (propsData.content || []).filter(b => b.type === "text").map(b => b.text).join("");
     try {
-      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-      if (Array.isArray(parsed) && parsed.length >= 1) { setFantasyPicks(parsed); }
+      const data = await claudeJSON(
+        `Search the web for today's NBA, NFL, EPL, MLS, and Liga MX games and confirmed active rosters.
+        Generate 6 player prop recommendations for PrizePicks and Underdog Fantasy (both legal in South Carolina).
+        CRITICAL RULES:
+        - Only include players CONFIRMED playing today (search for today's injury reports)
+        - Exclude any player listed as OUT, doubtful, or injured
+        - Use real current prop lines from PrizePicks if possible
+        - Base recommendations on today's matchup, recent form, and injury context
+        
+        Return JSON array of 6 objects:
+        {
+          "name": "Player Full Name",
+          "team": "Team Name",
+          "league": "NBA",
+          "position": "G",
+          "projection": "28.5",
+          "projStat": "PTS",
+          "analysis": "2-3 sentences: why this player hits their prop tonight. Cite specific stats, matchup, injuries.",
+          "props": [
+            { "stat": "Points", "line": "27.5", "rec": "over", "reason": "specific reason with stats" },
+            { "stat": "Assists", "line": "6.5", "rec": "under", "reason": "specific reason" }
+          ]
+        }`, 1500
+      );
+      if (Array.isArray(data) && data.length >= 1) setFantasyPicks(data);
       else setFantasyPicks(getFallbackFantasy());
-    } catch { setFantasyPicks(getFallbackFantasy()); }
+    } catch(e) {
+      console.error("loadFantasy error:", e);
+      setFantasyPicks(getFallbackFantasy());
+    }
     setFantasyLoading(false);
   }
 
