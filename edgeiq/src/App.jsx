@@ -58,9 +58,7 @@ async function callClaudeWithTools(messages, maxTokens = 2000) {
 async function claudeJSON(prompt, maxTokens = 2000) {
   try {
     const todayStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
-    const fullPrompt = "Today is " + todayStr + ". " + prompt + "
-
-IMPORTANT: Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation before or after.";
+    const fullPrompt = "Today is " + todayStr + ". " + prompt + "\n\nIMPORTANT: Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation before or after.";
     const text = await callClaudeWithTools([{ role: "user", content: fullPrompt }], maxTokens);
     const clean = text.replace(/```json|```/g, "").trim();
     const start = clean.indexOf("[");
